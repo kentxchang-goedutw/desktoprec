@@ -1,0 +1,174 @@
+/* 活潑現代化主題 - 漸層藍紫色系 */
+* {
+    font-family: "Segoe UI", "Microsoft JhengHei UI", sans-serif;
+    color: #2D3436;
+}
+
+QMainWindow, QWidget#mainWidget, QDialog {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #E0C3FC, stop:1 #8EC5FC);
+}
+
+/* 卡片與容器樣式 */
+QFrame#card {
+    background: rgba(255, 255, 255, 0.85);
+    border: 1px solid rgba(255, 255, 255, 0.5);
+    border-radius: 20px;
+}
+
+/* 標題與標籤 */
+QLabel#mainTitle {
+    color: #4834D4;
+    font-size: 28px;
+    font-weight: 900;
+}
+
+QLabel#subTitle {
+    color: #686DE0;
+    font-size: 13px;
+    font-weight: 600;
+}
+
+QLabel#hintLabel {
+    color: #4834D4;
+    font-size: 11px;
+    background: rgba(255, 255, 255, 0.4);
+    padding: 4px;
+    border-radius: 8px;
+}
+
+/* 按鈕樣式 */
+QPushButton {
+    background: #FFFFFF;
+    border: none;
+    border-radius: 12px;
+    padding: 10px 16px;
+    color: #4834D4;
+    font-size: 14px;
+    font-weight: 600;
+}
+
+QPushButton:hover {
+    background: #F1F2F6;
+    border-color: #6C5CE7;
+    color: #6C5CE7;
+}
+
+QPushButton:pressed {
+    background: #DFE6E9;
+}
+
+/* 主錄影按鈕 - 活潑漸層 */
+QPushButton#primaryBtn {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #6C5CE7, stop:1 #A29BFE);
+    border: none;
+    color: #FFFFFF;
+    font-size: 20px;
+    font-weight: 800;
+    border-radius: 16px;
+    padding: 18px;
+}
+
+QPushButton#primaryBtn:hover {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #5B4BCB, stop:1 #8E85EE);
+    /* 輕微發光感 */
+}
+
+/* 停止錄影按鈕 - 醒目紅 */
+QPushButton#stopBtn {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #FF7675, stop:1 #D63031);
+    border: none;
+    color: #FFFFFF;
+    font-size: 20px;
+    font-weight: 800;
+    border-radius: 16px;
+    padding: 18px;
+}
+
+QPushButton#stopBtn:hover {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #E84393, stop:1 #D63031);
+}
+
+/* 設定與功能按鈕 */
+QPushButton#actionBtn {
+    background: #FFFFFF;
+    border: 2px solid #F1F2F6;
+    color: #2D3436;
+}
+
+QPushButton#actionBtn:hover {
+    border-color: #A29BFE;
+    background: #F8F9FF;
+}
+
+/* 輸入控制項 */
+QComboBox, QLineEdit, QSpinBox {
+    background: #FFFFFF;
+    border: 2px solid #F1F2F6;
+    border-radius: 10px;
+    padding: 8px 12px;
+    color: #2D3436;
+}
+
+QComboBox:hover, QLineEdit:hover, QSpinBox:hover {
+    border-color: #A29BFE;
+}
+
+QComboBox:focus, QLineEdit:focus, QSpinBox:focus {
+    border-color: #6C5CE7;
+}
+
+/* 狀態列 */
+QStatusBar {
+    background: transparent;
+    color: #636E72;
+    border-top: 1px solid #F1F2F6;
+    font-size: 11px;
+}
+
+QStatusBar::item { border: none; }
+
+/* 標籤頁 */
+QTabWidget::pane {
+    border: 2px solid rgba(255, 255, 255, 0.5);
+    border-radius: 12px;
+    background: rgba(255, 255, 255, 0.9);
+}
+
+QTabBar::tab {
+    background: transparent;
+    color: #000000; /* 改為黑色 */
+    padding: 12px 20px;
+    font-weight: 800; /* 改為粗體 */
+    font-size: 14px;
+}
+
+QTabBar::tab:selected {
+    color: #4834D4; /* 選取時使用主題深紫色 */
+    border-bottom: 3px solid #4834D4;
+    background: rgba(255, 255, 255, 0.3);
+}
+
+QTabBar::tab:hover:!selected {
+    color: #6C5CE7;
+    background: rgba(255, 255, 255, 0.1);
+}
+
+/* 滑桿 */
+QSlider::groove:horizontal {
+    height: 8px;
+    background: #F1F2F6;
+    border-radius: 4px;
+}
+
+QSlider::handle:horizontal {
+    background: #6C5CE7;
+    width: 20px;
+    height: 20px;
+    margin: -6px 0;
+    border-radius: 10px;
+}
+
+QSlider::sub-page:horizontal {
+    background: #A29BFE;
+    border-radius: 4px;
+}
