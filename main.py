@@ -12,7 +12,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from PySide6.QtWidgets import QApplication
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont
-
+from core.config import load_config, save_config, resource_path
+from core.ffmpeg_utils import find_ffmpeg, ensure_ffmpeg
 from ui.main_window import MainWindow
 
 
@@ -22,11 +23,13 @@ def main():
     app = QApplication(sys.argv)
     app.setFont(QFont("Microsoft JhengHei UI", 10))
 
-    qss_path = Path(__file__).parent / "ui" / "styles.qss"
-    if qss_path.exists():
-        app.setStyleSheet(qss_path.read_text(encoding="utf-8"))
+    qss_path = resource_path(os.path.join("ui", "styles.qss"))
+    if os.path.exists(qss_path):
+        with open(qss_path, "r", encoding="utf-8") as f:
+            app.setStyleSheet(f.read())
 
     w = MainWindow()
+
     w.show()
     sys.exit(app.exec())
 
