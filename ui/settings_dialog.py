@@ -1,5 +1,5 @@
 """設定對話框 - 分頁式"""
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtGui import QKeyEvent, QKeySequence
 from PySide6.QtWidgets import (QDialog, QTabWidget, QVBoxLayout, QHBoxLayout,
                                 QGridLayout, QWidget, QLabel, QPushButton,
@@ -8,9 +8,10 @@ from PySide6.QtWidgets import (QDialog, QTabWidget, QVBoxLayout, QHBoxLayout,
                                 QFrame, QMessageBox, QApplication)
 
 from core.config import save_config, DEFAULT_CONFIG
-from core.ffmpeg_utils import (detect_encoders, list_dshow_audio,
-                                list_audio_via_sounddevice, diagnose_dshow)
+from core.ffmpeg_utils import (detect_encoders, list_audio_devices,
+                                list_audio_via_sounddevice, diagnose_audio_devices)
 from core.hotkey import HAS_KEYBOARD
+import sys
 from .region_selector import RegionSelector
 
 try:
@@ -18,6 +19,18 @@ try:
     HAS_GW = True
 except Exception:
     HAS_GW = False
+
+try:
+    import cv2
+    HAS_CV2 = True
+except Exception:
+    HAS_CV2 = False
+
+try:
+    from pygrabber.dshow_graph import FilterGraph
+    HAS_PYGRABBER = True
+except Exception:
+    HAS_PYGRABBER = False
 
 # 自定義快速鍵錄製元件
 class HotkeyLineEdit(QLineEdit):
@@ -97,9 +110,14 @@ class SettingsDialog(QDialog):
         self.tabs.addTab(self._tab_region(), "錄影區域")
         self.tabs.addTab(self._tab_video(), "畫質/編碼")
         self.tabs.addTab(self._tab_audio(), "音訊")
+        self.tabs.addTab(self._tab_webcam(), "Webcam")
         self.tabs.addTab(self._tab_hotkey(), "快速鍵")
         self.tabs.addTab(self._tab_annot(), "標註")
         self.tabs.addTab(self._tab_output(), "輸出")
+        
+        # 監聽分頁切換，實現延遲載入以加速啟動
+        self.tabs.currentChanged.connect(self._on_tab_changed)
+        
         outer.addWidget(self.tabs, 1)
 
         # 底部按鈕
@@ -116,6 +134,13 @@ class SettingsDialog(QDialog):
 
         self._load_audio_devices()
 
+    def _on_tab_changed(self, index):
+        """當切換到特定分頁時才載入耗時資源"""
+        title = self.tabs.tabText(index)
+        if title == "Webcam":
+            if self.cb_cam_dev.count() <= 1: # 只有預設或空才更新
+                self._refresh_cams()
+
     # ============ 錄影區域 ============
     def _tab_region(self):
         w = QWidget()
@@ -124,26 +149,14 @@ class SettingsDialog(QDialog):
 
         card, cv = make_card("區域類型")
         self.rb_full = QRadioButton("全螢幕")
-        self.rb_window = QRadioButton("視窗")
         self.rb_custom = QRadioButton("自訂區塊")
         bg = QButtonGroup(self)
-        for b in (self.rb_full, self.rb_window, self.rb_custom):
+        for b in (self.rb_full, self.rb_custom):
             bg.addButton(b)
         m = self.cfg.get("region_mode", "fullscreen")
-        {"fullscreen": self.rb_full, "window": self.rb_window,
-         "custom": self.rb_custom}[m].setChecked(True)
+        if m == "window": m = "fullscreen" # 修正舊設定
+        {"fullscreen": self.rb_full, "custom": self.rb_custom}[m].setChecked(True)
         cv.addWidget(self.rb_full)
-
-        h_win = QHBoxLayout()
-        h_win.addWidget(self.rb_window)
-        self.cb_window = QComboBox()
-        self._refresh_windows()
-        btn = QPushButton("⟳")
-        btn.setFixedWidth(36)
-        btn.clicked.connect(self._refresh_windows)
-        h_win.addWidget(self.cb_window, 1)
-        h_win.addWidget(btn)
-        cv.addLayout(h_win)
 
         h_cus = QHBoxLayout()
         h_cus.addWidget(self.rb_custom)
@@ -194,10 +207,25 @@ class SettingsDialog(QDialog):
         self._picker.show()
 
     def _on_region_selected(self, x, y, w, h):
-        self.cfg["custom_region"] = [x, y, w, h]
-        self.lbl_region.setText(self._region_text())
+        # 考慮高 DPI 縮放：Qt 傳回的是邏輯單位，FFmpeg 需要的是實際像素
+        screen = QApplication.primaryScreen()
+        ratio = screen.devicePixelRatio()
+        
+        # 轉換為真實像素座標
+        px, py = int(x * ratio), int(y * ratio)
+        pw, ph = int(w * ratio), int(h * ratio)
+        
+        self.cfg["custom_region"] = [px, py, pw, ph]
+        self.cfg["region_mode"] = "custom"
+        self.lbl_region.setText(f"已選: {px},{py} {pw}×{ph} (px)")
         self.rb_custom.setChecked(True)
+        
+        # 自動儲存
+        save_config(self.cfg)
+        
         self.show()
+        self.activateWindow()
+        self.raise_()
 
     # ============ 畫質 / 編碼 ============
     def _tab_video(self):
@@ -318,7 +346,10 @@ class SettingsDialog(QDialog):
         cv.addWidget(self.cb_mic_audio)
         cv.addWidget(self.cb_mic)
 
-        tip = QLabel("提示：系統聲音會自動尋找「立體聲混音」等裝置。")
+        if sys.platform == "darwin":
+            tip = QLabel("提示：macOS 錄製系統聲音通常需要安裝 BlackHole 等虛擬音效卡。")
+        else:
+            tip = QLabel("提示：系統聲音會自動尋找「立體聲混音」等裝置。")
         tip.setStyleSheet("color:#888; font-size:11px;")
         cv.addWidget(tip)
         v.addWidget(card)
@@ -329,7 +360,7 @@ class SettingsDialog(QDialog):
         self._detected_sys_device = None
         self.cb_mic.clear()
         try:
-            devs = list_dshow_audio(self.cfg.get("ffmpeg_path", "ffmpeg"))
+            devs = list_audio_devices(self.cfg.get("ffmpeg_path", "ffmpeg"))
         except Exception:
             devs = []
         if not devs:
@@ -349,7 +380,7 @@ class SettingsDialog(QDialog):
         
         # 尋找系統音裝置
         for d in devs:
-            if any(k in d.lower() for k in ("stereo mix", "立體聲混音", "loopback")):
+            if any(k in d.lower() for k in ("stereo mix", "立體聲混音", "loopback", "blackhole")):
                 self._detected_sys_device = d
                 break
         
@@ -363,8 +394,131 @@ class SettingsDialog(QDialog):
             if idx >= 0: self.cb_mic.setCurrentIndex(idx)
 
     def _show_audio_diag(self):
-        text = diagnose_dshow(self.cfg.get("ffmpeg_path", "ffmpeg"))
+        text = diagnose_audio_devices(self.cfg.get("ffmpeg_path", "ffmpeg"))
         QMessageBox.information(self, "音訊診斷", text)
+
+    # ============ Webcam ============
+    def _tab_webcam(self):
+        w = QWidget()
+        v = QVBoxLayout(w)
+        v.setSpacing(12)
+
+        c, cv = make_card("Webcam 設定")
+        self.cb_webcam = QCheckBox("啟用 Webcam (圓形框)")
+        self.cb_webcam.setChecked(self.cfg.get("webcam_enabled", False))
+        self.cb_webcam.toggled.connect(self._on_webcam_toggled)
+        cv.addWidget(self.cb_webcam)
+
+        g = QGridLayout()
+        g.addWidget(QLabel("選擇裝置"), 0, 0)
+        self.cb_cam_dev = QComboBox()
+        self.cb_cam_dev.addItem("切換分頁後自動偵測...")
+        g.addWidget(self.cb_cam_dev, 0, 1)
+
+        g.addWidget(QLabel("圓框大小"), 1, 0)
+        h_size = QHBoxLayout()
+        self.sl_cam_size = QSlider(Qt.Horizontal)
+        self.sl_cam_size.setRange(100, 500)
+        self.sl_cam_size.setValue(self.cfg.get("webcam_size", 200))
+        self.lbl_cam_size = QLabel(f"{self.sl_cam_size.value()} px")
+        self.sl_cam_size.valueChanged.connect(lambda v: self.lbl_cam_size.setText(f"{v} px"))
+        h_size.addWidget(self.sl_cam_size, 1)
+        h_size.addWidget(self.lbl_cam_size)
+        g.addLayout(h_size, 1, 1)
+        
+        cv.addLayout(g)
+
+        self.btn_preview_cam = QPushButton("預覽 Webcam 位置")
+        self.btn_preview_cam.clicked.connect(self._preview_webcam)
+        cv.addWidget(self.btn_preview_cam)
+
+        v.addWidget(c)
+        v.addStretch()
+        return w
+
+    def _refresh_cams(self):
+        if not HAS_CV2:
+            self.cb_cam_dev.clear()
+            self.cb_cam_dev.addItem("未安裝 OpenCV")
+            return
+        
+        # 顯示掃描中狀態
+        self.cb_cam_dev.clear()
+        self.cb_cam_dev.addItem("攝影機型號掃描中...")
+        QApplication.processEvents()
+
+        found_devs = []
+        
+        # 優先使用 pygrabber 獲取型號名稱
+        if HAS_PYGRABBER:
+            try:
+                graph = FilterGraph()
+                devices = graph.get_input_devices()
+                for i, name in enumerate(devices):
+                    # 雙重確認 OpenCV 是否真的能開啟該裝置
+                    cap = cv2.VideoCapture(i)
+                    if cap.isOpened():
+                        found_devs.append((f"{name}", i))
+                        cap.release()
+            except Exception as e:
+                print(f"pygrabber 掃描失敗: {e}")
+
+        # 若 pygrabber 沒找到或失敗，退回原本的簡單偵測
+        if not found_devs:
+            for i in range(4):
+                cap = cv2.VideoCapture(i)
+                if cap.isOpened():
+                    found_devs.append((f"Camera {i}", i))
+                    cap.release()
+        
+        self.cb_cam_dev.clear()
+        if not found_devs:
+            self.cb_cam_dev.addItem("未偵測到攝影機")
+            return
+            
+        for label, idx in found_devs:
+            self.cb_cam_dev.addItem(label, idx)
+        
+        cur = self.cfg.get("webcam_index", 0)
+        idx = self.cb_cam_dev.findData(cur)
+        if idx >= 0: self.cb_cam_dev.setCurrentIndex(idx)
+
+    def _on_webcam_toggled(self, checked):
+        if checked:
+            self._preview_webcam()
+        else:
+            if hasattr(self, "_webcam_preview") and self._webcam_preview:
+                self._webcam_preview.close()
+                self._webcam_preview = None
+
+    def _preview_webcam(self):
+        from .webcam import WebcamOverlay
+        if hasattr(self, "_webcam_preview") and self._webcam_preview:
+            if self._webcam_preview.isVisible():
+                return # 已經開著了就不用重複開
+            else:
+                self._webcam_preview.close()
+        
+        idx = self.cb_cam_dev.currentData()
+        if idx is None: 
+            # 如果是自動觸發但沒裝置，就不彈窗，只靜默失敗
+            return
+        
+        # 建立預覽視窗，傳入 self 作為 parent 但設為 Window 屬性以繞過模態鎖定
+        self._webcam_preview = WebcamOverlay(idx, self.sl_cam_size.value(), parent=self)
+        pos = self.cfg.get("webcam_pos")
+        if pos:
+            self._webcam_preview.move(pos[0], pos[1])
+        
+        self._webcam_preview.show()
+        
+        # 監聽關閉事件，如果使用者手動關掉，也要同步勾選框
+        def on_preview_closed():
+            if self.cb_webcam.isChecked():
+                self.cb_webcam.blockSignals(True)
+                self.cb_webcam.setChecked(False)
+                self.cb_webcam.blockSignals(False)
+        self._webcam_preview.closed.connect(on_preview_closed)
 
     # ============ 快速鍵 ============
     def _tab_hotkey(self):
@@ -458,8 +612,7 @@ class SettingsDialog(QDialog):
     # ============ 儲存 ============
     def accept_and_save(self):
         c = self.cfg
-        c["region_mode"] = "fullscreen" if self.rb_full.isChecked() else "window" if self.rb_window.isChecked() else "custom"
-        c["window_title"] = self.cb_window.currentText() if HAS_GW else ""
+        c["region_mode"] = "fullscreen" if self.rb_full.isChecked() else "custom"
         c["resolution"] = self.cb_res.currentText()
         c["fps"] = self.sp_fps.value()
         c["container"] = self.cb_container.currentText()
@@ -472,6 +625,17 @@ class SettingsDialog(QDialog):
         if hasattr(self, "_detected_sys_device") and self._detected_sys_device:
             c["audio_system_device"] = self._detected_sys_device
         c["audio_mic_device"] = self.cb_mic.currentText()
+        
+        # Webcam 儲存
+        c["webcam_enabled"] = self.cb_webcam.isChecked()
+        c["webcam_index"] = self.cb_cam_dev.currentData() if self.cb_cam_dev.currentData() is not None else 0
+        c["webcam_size"] = self.sl_cam_size.value()
+        if hasattr(self, "_webcam_preview") and self._webcam_preview:
+            p = self._webcam_preview.pos()
+            c["webcam_pos"] = [p.x(), p.y()]
+            self._webcam_preview.close()
+            self._webcam_preview = None
+
         c["show_cursor"] = self.cb_cursor.isChecked()
         c["use_mini_toolbar"] = self.cb_mini.isChecked()
         c["use_countdown"] = self.cb_count.isChecked()
