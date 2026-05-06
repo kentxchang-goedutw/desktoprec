@@ -2,7 +2,7 @@
 
 一個基於 Python 與 PySide6 開發的極簡、現代化桌面錄影工具。支援硬體加速、即時標註、獨立 Webcam 圓形視窗，並具備自動下載 FFmpeg 的功能，讓使用者開箱即用。
 
-![UI Preview](assets/icon.png)
+![UI Preview](assets/UI.png)
 
 ## ✨ 特色功能
 
