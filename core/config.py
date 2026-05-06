@@ -1,7 +1,13 @@
 """設定持久化管理"""
 import json
 import os
+import sys
 from pathlib import Path
+
+def resource_path(relative_path):
+    """ Get absolute path to resource, works for dev and for PyInstaller """
+    base_path = getattr(sys, '_MEIPASS', os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    return os.path.join(base_path, relative_path)
 
 CONFIG_PATH = Path.home() / ".desktop_recorder" / "config.json"
 
@@ -44,6 +50,10 @@ DEFAULT_CONFIG = {
     "annotation_default_color": "#FF3B30",
     "annotation_pen_width": 4,
     "annotation_auto_fade_seconds": 0,  # 0 = 不消失
+    "webcam_enabled": False,
+    "webcam_index": 0,
+    "webcam_size": 200,
+    "webcam_pos": None, # [x, y]
     "ffmpeg_path": "ffmpeg",
 }
 
