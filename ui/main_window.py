@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                                 QLabel, QPushButton, QStatusBar, QMessageBox,
                                 QApplication)
 
-from core.config import load_config, save_config
+from core.config import load_config, save_config, resource_path
 from core.ffmpeg_utils import find_ffmpeg, ensure_ffmpeg
 from core.recorder import Recorder
 from core.hotkey import HotkeyManager
@@ -16,6 +16,8 @@ from .settings_dialog import SettingsDialog
 from .countdown import CountdownOverlay
 from .mini_toolbar import MiniToolbar
 from .annotation import AnnotationOverlay
+from .webcam import WebcamOverlay
+from .region_border import RegionBorderOverlay
 
 
 class MainWindow(QMainWindow):
@@ -41,10 +43,12 @@ class MainWindow(QMainWindow):
         self.recorder = None
         self.mini = None
         self.annot = None
+        self.webcam = None
+        self.border = None
         self.hotkeys = HotkeyManager()
 
         # 設定視窗圖示
-        icon_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "icon.png")
+        icon_path = resource_path(os.path.join("assets", "icon.png"))
         if os.path.exists(icon_path):
             self.setWindowIcon(QIcon(icon_path))
 
@@ -109,11 +113,20 @@ class MainWindow(QMainWindow):
         self.btn_open.setObjectName("actionBtn")
         self.btn_open.setMinimumHeight(50)
         self.btn_open.clicked.connect(self._open_dir)
+        
+        self.btn_webcam_toggle = QPushButton("📷  Webcam")
+        self.btn_webcam_toggle.setObjectName("actionBtn")
+        self.btn_webcam_toggle.setMinimumHeight(50)
+        self.btn_webcam_toggle.clicked.connect(self._on_btn_webcam_toggled)
+        self._update_webcam_btn_style()
+
         self.btn_settings = QPushButton("⚙  設定")
         self.btn_settings.setObjectName("actionBtn")
         self.btn_settings.setMinimumHeight(50)
         self.btn_settings.clicked.connect(self.open_settings)
+        
         row.addWidget(self.btn_open, 1)
+        row.addWidget(self.btn_webcam_toggle, 1)
         row.addWidget(self.btn_settings, 1)
         v.addLayout(row)
 
@@ -145,6 +158,12 @@ class MainWindow(QMainWindow):
         # 狀態列
         self.status = QStatusBar()
         self.setStatusBar(self.status)
+        
+        # 初始化常駐 Webcam
+        self._init_webcam_persistent()
+        
+        # 初始化常駐錄影區域邊框
+        self._update_region_border()
 
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._on_tick)
@@ -193,9 +212,84 @@ class MainWindow(QMainWindow):
     def _on_settings_changed(self):
         self._register_hotkeys()
         self._refresh_hint()
-        self.status.showMessage("✓ 設定已儲存")
+        self._init_webcam_persistent()
+        self._update_region_border()
+        self.status.showMessage("✓ 設定已儲存", 3000)
+
+    def _update_region_border(self):
+        """根據設定更新常駐錄影邊框 (藍色預覽)"""
+        if self.cfg.get("region_mode") == "custom" and self.cfg.get("custom_region"):
+            # 如果座標沒變且已存在，就不用重開
+            if self.border and self.border.rect_list == self.cfg["custom_region"]:
+                self.border.set_recording_mode(False)
+                self.border.show()
+                return
+                
+            if self.border:
+                self.border.close()
+            
+            self.border = RegionBorderOverlay(self.cfg["custom_region"])
+            self.border.set_recording_mode(False)
+            self.border.show()
+        else:
+            if self.border:
+                self.border.close()
+                self.border = None
+
+    def _init_webcam_persistent(self):
+        """根據設定初始化或更新常駐 Webcam"""
+        enabled = self.cfg.get("webcam_enabled", False)
+        if enabled:
+            idx = self.cfg.get("webcam_index", 0)
+            size = self.cfg.get("webcam_size", 200)
+            pos = self.cfg.get("webcam_pos")
+
+            if not self.webcam:
+                self.webcam = WebcamOverlay(idx, size)
+                if pos:
+                    self.webcam.move(pos[0], pos[1])
+                self.webcam.closed.connect(self._on_webcam_manually_closed)
+                self.webcam.show()
+            else:
+                if self.webcam.camera_index != idx:
+                    self.webcam.close()
+                    self.webcam = WebcamOverlay(idx, size)
+                    if pos: self.webcam.move(pos[0], pos[1])
+                    self.webcam.closed.connect(self._on_webcam_manually_closed)
+                    self.webcam.show()
+                else:
+                    self.webcam.set_overlay_size(size)
+                    self.webcam.show()
+        else:
+            if self.webcam:
+                self.webcam.close()
+                self.webcam = None
+
+    def _on_webcam_manually_closed(self):
+        self.webcam = None
+        self.cfg["webcam_enabled"] = False
+        save_config(self.cfg)
+        self._update_webcam_btn_style()
+
+    def _on_btn_webcam_toggled(self):
+        """主介面按鈕切換 Webcam"""
+        is_enabled = self.cfg.get("webcam_enabled", False)
+        self.cfg["webcam_enabled"] = not is_enabled
+        save_config(self.cfg)
+        self._init_webcam_persistent()
+        self._update_webcam_btn_style()
+
+    def _update_webcam_btn_style(self):
+        """根據狀態更新按鈕外觀"""
+        if self.cfg.get("webcam_enabled", False):
+            self.btn_webcam_toggle.setText("📷  關閉視訊")
+            self.btn_webcam_toggle.setStyleSheet("color: #FF7675; font-weight: bold;")
+        else:
+            self.btn_webcam_toggle.setText("📷  開啟視訊")
+            self.btn_webcam_toggle.setStyleSheet("")
 
     def _open_dir(self):
+
         d = self.cfg.get("output_dir")
         Path(d).mkdir(parents=True, exist_ok=True)
         if os.name == "nt":
@@ -348,6 +442,10 @@ class MainWindow(QMainWindow):
             self.mini.annotate_clicked.connect(self.toggle_annotation)
             self.mini.show()
 
+        # 將常駐邊框切換為錄影模式 (紅色虛線)
+        if self.border:
+            self.border.set_recording_mode(True)
+
         self._timer.start(500)
 
     def _on_tick(self):
@@ -381,6 +479,11 @@ class MainWindow(QMainWindow):
         if self.annot:
             self.annot.close_overlay()
             self.annot = None
+            
+        # 將邊框恢復為預覽模式 (藍色實線)
+        if self.border:
+            self.border.set_recording_mode(False)
+            
         self.btn_stop.hide()
         self.btn_record.show()
         self.showNormal()
