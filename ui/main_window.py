@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
 
 from core.config import load_config, save_config, resource_path
 from core.ffmpeg_utils import find_ffmpeg, ensure_ffmpeg
+from core.display_utils import monitor_rects
 from core.recorder import Recorder
 from core.hotkey import HotkeyManager
 from .settings_dialog import SettingsDialog
@@ -46,6 +47,7 @@ class MainWindow(QMainWindow):
         self.webcam = None
         self.border = None
         self.hotkeys = HotkeyManager()
+        self._start_after_ffmpeg_download = False
 
         # 設定視窗圖示
         icon_path = resource_path(os.path.join("assets", "icon.png"))
@@ -66,7 +68,7 @@ class MainWindow(QMainWindow):
         self.sig_ffmpeg_ready.connect(self._on_ffmpeg_ready)
         self.sig_ffmpeg_msg.connect(self._on_ffmpeg_msg)
 
-        self.setWindowTitle("桌面錄影工具")
+        self.setWindowTitle("桌面錄影工具 V2")
         self.resize(440, 360)
 
         cw = QWidget()
@@ -78,7 +80,7 @@ class MainWindow(QMainWindow):
         v.setSpacing(20)
 
         # 標題
-        title = QLabel("桌面錄影工具")
+        title = QLabel("桌面錄影工具 V2")
         title.setObjectName("mainTitle")
         title.setAlignment(Qt.AlignCenter)
         
@@ -182,7 +184,11 @@ class MainWindow(QMainWindow):
         if path:
             self.cfg["ffmpeg_path"] = path
             self.status.showMessage("✓ ffmpeg 已就緒", 3000)
+            if self._start_after_ffmpeg_download:
+                self._start_after_ffmpeg_download = False
+                QTimer.singleShot(500, self.on_start)
         else:
+            self._start_after_ffmpeg_download = False
             self.status.showMessage("❌ ffmpeg 下載失敗，請檢查網路")
 
     def _refresh_hint(self):
@@ -218,9 +224,18 @@ class MainWindow(QMainWindow):
 
     def _update_region_border(self):
         """根據設定更新常駐錄影邊框 (藍色預覽)"""
-        if self.cfg.get("region_mode") == "custom" and self.cfg.get("custom_region"):
+        preview_region = None
+        if self.cfg.get("region_mode") == "monitor":
+            monitors = monitor_rects()
+            idx = int(self.cfg.get("monitor_index", 0) or 0)
+            if 0 <= idx < len(monitors):
+                preview_region = monitors[idx]
+        elif self.cfg.get("region_mode") == "custom" and self.cfg.get("custom_region"):
+            preview_region = self.cfg["custom_region"]
+
+        if preview_region:
             # 如果座標沒變且已存在，就不用重開
-            if self.border and self.border.rect_list == self.cfg["custom_region"]:
+            if self.border and self.border.rect_list == preview_region:
                 self.border.set_recording_mode(False)
                 self.border.show()
                 return
@@ -228,7 +243,7 @@ class MainWindow(QMainWindow):
             if self.border:
                 self.border.close()
             
-            self.border = RegionBorderOverlay(self.cfg["custom_region"])
+            self.border = RegionBorderOverlay(preview_region)
             self.border.set_recording_mode(False)
             self.border.show()
         else:
@@ -397,8 +412,7 @@ class MainWindow(QMainWindow):
             self._dl_thread.start()
             
             QMessageBox.information(self, "提示", "程式正在下載錄影必要的 ffmpeg 組件 (約 100MB)，下載完成後將自動開始錄影。")
-            # 下載完後透過信號觸發 on_start 重新執行即可
-            self.sig_ffmpeg_ready.connect(lambda p: QTimer.singleShot(500, self.on_start) if p else None, type=Qt.UniqueConnection)
+            self._start_after_ffmpeg_download = True
             return
 
         self.cfg["ffmpeg_path"] = current_ffmpeg

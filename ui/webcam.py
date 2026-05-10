@@ -1,5 +1,6 @@
 """Webcam 圓形懸浮視窗"""
 import cv2
+import sys
 from PySide6.QtCore import Qt, QTimer, QPoint, QRect, Signal
 from PySide6.QtGui import QImage, QPixmap, QPainter, QBrush, QColor, QPen, QRegion, QPainterPath, QAction
 from PySide6.QtWidgets import QWidget, QLabel, QVBoxLayout, QMenu
@@ -23,7 +24,10 @@ class WebcamOverlay(QWidget):
         self.lbl_video.setFixedSize(size, size)
         
         # OpenCV 設定
-        self.cap = cv2.VideoCapture(self.camera_index)
+        if sys.platform == "win32":
+            self.cap = cv2.VideoCapture(self.camera_index, cv2.CAP_DSHOW)
+        else:
+            self.cap = cv2.VideoCapture(self.camera_index)
         
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._update_frame)

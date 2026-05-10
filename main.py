@@ -21,7 +21,8 @@ def main():
     QApplication.setHighDpiScaleFactorRoundingPolicy(
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     app = QApplication(sys.argv)
-    app.setFont(QFont("Microsoft JhengHei UI", 10))
+    font_family = "PingFang TC" if sys.platform == "darwin" else "Microsoft JhengHei UI"
+    app.setFont(QFont(font_family, 10))
 
     qss_path = resource_path(os.path.join("ui", "styles.qss"))
     if os.path.exists(qss_path):

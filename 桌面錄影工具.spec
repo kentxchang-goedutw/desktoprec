@@ -1,11 +1,17 @@
 # -*- mode: python ; coding: utf-8 -*-
+import os
+import sys
+
+
+app_name = '桌面錄影工具V2'
+icon_path = 'assets/icon.ico' if sys.platform == 'win32' and os.path.exists('assets/icon.ico') else None
 
 
 a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=[],
-    datas=[('ui/styles.qss', 'ui'), ('assets/icon.png', 'assets')],
+    datas=[('ui/styles.qss', 'ui'), ('assets/*', 'assets')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
@@ -22,7 +28,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='桌面錄影工具',
+    name=app_name,
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -31,9 +37,17 @@ exe = EXE(
     runtime_tmpdir=None,
     console=False,
     disable_windowed_traceback=False,
-    argv_emulation=False,
+    argv_emulation=sys.platform == 'darwin',
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['assets\\icon.ico'],
+    icon=icon_path,
 )
+
+if sys.platform == 'darwin':
+    app = BUNDLE(
+        exe,
+        name=f'{app_name}.app',
+        icon=None,
+        bundle_identifier='tw.blogspot.kentxchang.desktoprecorder',
+    )

@@ -9,7 +9,9 @@ from PySide6.QtWidgets import (QDialog, QTabWidget, QVBoxLayout, QHBoxLayout,
 
 from core.config import save_config, DEFAULT_CONFIG
 from core.ffmpeg_utils import (detect_encoders, list_audio_devices,
-                                list_audio_via_sounddevice, diagnose_audio_devices)
+                                list_audio_via_sounddevice, diagnose_audio_devices,
+                                find_mac_system_audio_device)
+from core.display_utils import monitor_rects, qt_rect_to_physical
 from core.hotkey import HAS_KEYBOARD
 import sys
 from .region_selector import RegionSelector
@@ -52,7 +54,8 @@ class HotkeyLineEdit(QLineEdit):
         if modifiers & Qt.ControlModifier: parts.append("ctrl")
         if modifiers & Qt.ShiftModifier: parts.append("shift")
         if modifiers & Qt.AltModifier: parts.append("alt")
-        if modifiers & Qt.MetaModifier: parts.append("windows")
+        if modifiers & Qt.MetaModifier:
+            parts.append("command" if sys.platform == "darwin" else "windows")
 
         # 獲取主要按鍵名稱
         key_name = QKeySequence(key).toString().lower()
@@ -148,15 +151,25 @@ class SettingsDialog(QDialog):
         v.setSpacing(12)
 
         card, cv = make_card("區域類型")
-        self.rb_full = QRadioButton("全螢幕")
-        self.rb_custom = QRadioButton("自訂區塊")
+        self.rb_full = QRadioButton("全螢幕(所有螢幕同時錄製)")
+        self.rb_monitor = QRadioButton("指定螢幕")
+        self.rb_custom = QRadioButton("自訂區塊(限螢幕1)")
         bg = QButtonGroup(self)
-        for b in (self.rb_full, self.rb_custom):
+        for b in (self.rb_full, self.rb_monitor, self.rb_custom):
             bg.addButton(b)
         m = self.cfg.get("region_mode", "fullscreen")
         if m == "window": m = "fullscreen" # 修正舊設定
-        {"fullscreen": self.rb_full, "custom": self.rb_custom}[m].setChecked(True)
+        if m not in ("fullscreen", "monitor", "custom"):
+            m = "fullscreen"
+        {"fullscreen": self.rb_full, "monitor": self.rb_monitor, "custom": self.rb_custom}[m].setChecked(True)
         cv.addWidget(self.rb_full)
+
+        h_mon = QHBoxLayout()
+        h_mon.addWidget(self.rb_monitor)
+        self.cb_monitor = QComboBox()
+        self._load_monitors()
+        h_mon.addWidget(self.cb_monitor, 1)
+        cv.addLayout(h_mon)
 
         h_cus = QHBoxLayout()
         h_cus.addWidget(self.rb_custom)
@@ -174,6 +187,19 @@ class SettingsDialog(QDialog):
         v.addWidget(card)
         v.addStretch()
         return w
+
+    def _load_monitors(self):
+        self.cb_monitor.clear()
+        monitors = monitor_rects()
+        if not monitors:
+            self.cb_monitor.addItem("偵測不到螢幕", 0)
+            return
+        for i, (x, y, w, h) in enumerate(monitors):
+            self.cb_monitor.addItem(f"螢幕 {i + 1}: {w}×{h} ({x},{y})", i)
+        cur = int(self.cfg.get("monitor_index", 0) or 0)
+        idx = self.cb_monitor.findData(cur)
+        if idx >= 0:
+            self.cb_monitor.setCurrentIndex(idx)
 
     def _refresh_windows(self):
         self.cb_window.clear()
@@ -207,13 +233,7 @@ class SettingsDialog(QDialog):
         self._picker.show()
 
     def _on_region_selected(self, x, y, w, h):
-        # 考慮高 DPI 縮放：Qt 傳回的是邏輯單位，FFmpeg 需要的是實際像素
-        screen = QApplication.primaryScreen()
-        ratio = screen.devicePixelRatio()
-        
-        # 轉換為真實像素座標
-        px, py = int(x * ratio), int(y * ratio)
-        pw, ph = int(w * ratio), int(h * ratio)
+        px, py, pw, ph = qt_rect_to_physical(x, y, w, h)
         
         self.cfg["custom_region"] = [px, py, pw, ph]
         self.cfg["region_mode"] = "custom"
@@ -334,7 +354,11 @@ class SettingsDialog(QDialog):
         head.addWidget(b1)
         cv.addLayout(head)
 
-        self.cb_sys_audio = QCheckBox("錄製系統聲音 (使用預設回放)")
+        if sys.platform == "darwin":
+            sys_audio_text = "錄製系統聲音 (需 BlackHole/Loopback 等虛擬音訊裝置)"
+        else:
+            sys_audio_text = "錄製系統聲音 (喇叭/耳機當下聽到的聲音)"
+        self.cb_sys_audio = QCheckBox(sys_audio_text)
         self.cb_sys_audio.setChecked(self.cfg.get("audio_system", False))
         
         self.cb_mic_audio = QCheckBox("錄製麥克風")
@@ -347,9 +371,22 @@ class SettingsDialog(QDialog):
         cv.addWidget(self.cb_mic)
 
         if sys.platform == "darwin":
-            tip = QLabel("提示：macOS 錄製系統聲音通常需要安裝 BlackHole 等虛擬音效卡。")
+            blackhole_url = "https://github.com/ExistentialAudio/BlackHole"
+            tip = QLabel(
+                "提示：macOS 錄製系統音訊需安裝虛擬音訊裝置，建議使用 "
+                f"<a href='{blackhole_url}' style='color:#7BB6FF;'>BlackHole</a>。 "
+                "安裝後在「音訊來源」重新偵測並選擇即可。"
+            )
+            tip.setOpenExternalLinks(True)
         else:
-            tip = QLabel("提示：系統聲音會自動尋找「立體聲混音」等裝置。")
+            download_url = "https://github.com/rdp/screen-capture-recorder-to-video-windows-free/releases/download/v0.13.3/Setup.Screen.Capturer.Recorder.v0.13.3.exe"
+            tip = QLabel(
+                "提示：如要啟用錄製系統音訊，請先下載 "
+                f"<a href='{download_url}' style='color:#7BB6FF;'>{download_url}</a> "
+                "這個軟體，在介面上點擊就可以連結到下載點。"
+            )
+            tip.setOpenExternalLinks(True)
+        tip.setWordWrap(True)
         tip.setStyleSheet("color:#888; font-size:11px;")
         cv.addWidget(tip)
         v.addWidget(card)
@@ -380,7 +417,11 @@ class SettingsDialog(QDialog):
         
         # 尋找系統音裝置
         for d in devs:
-            if any(k in d.lower() for k in ("stereo mix", "立體聲混音", "loopback", "blackhole")):
+            if any(k in d.lower() for k in (
+                "stereo mix", "立體聲混音", "loopback", "blackhole",
+                "soundflower", "background music", "backgroundmusic", "eqmac",
+                "virtual-audio-capturer", "what u hear", "wave out mix",
+            )):
                 self._detected_sys_device = d
                 break
         
@@ -413,6 +454,7 @@ class SettingsDialog(QDialog):
         g.addWidget(QLabel("選擇裝置"), 0, 0)
         self.cb_cam_dev = QComboBox()
         self.cb_cam_dev.addItem("切換分頁後自動偵測...")
+        self.cb_cam_dev.currentIndexChanged.connect(self._on_webcam_device_changed)
         g.addWidget(self.cb_cam_dev, 0, 1)
 
         g.addWidget(QLabel("圓框大小"), 1, 0)
@@ -437,9 +479,11 @@ class SettingsDialog(QDialog):
         return w
 
     def _refresh_cams(self):
+        self.cb_cam_dev.blockSignals(True)
         if not HAS_CV2:
             self.cb_cam_dev.clear()
             self.cb_cam_dev.addItem("未安裝 OpenCV")
+            self.cb_cam_dev.blockSignals(False)
             return
         
         # 顯示掃描中狀態
@@ -456,7 +500,7 @@ class SettingsDialog(QDialog):
                 devices = graph.get_input_devices()
                 for i, name in enumerate(devices):
                     # 雙重確認 OpenCV 是否真的能開啟該裝置
-                    cap = cv2.VideoCapture(i)
+                    cap = cv2.VideoCapture(i, cv2.CAP_DSHOW) if sys.platform == "win32" else cv2.VideoCapture(i)
                     if cap.isOpened():
                         found_devs.append((f"{name}", i))
                         cap.release()
@@ -466,7 +510,7 @@ class SettingsDialog(QDialog):
         # 若 pygrabber 沒找到或失敗，退回原本的簡單偵測
         if not found_devs:
             for i in range(4):
-                cap = cv2.VideoCapture(i)
+                cap = cv2.VideoCapture(i, cv2.CAP_DSHOW) if sys.platform == "win32" else cv2.VideoCapture(i)
                 if cap.isOpened():
                     found_devs.append((f"Camera {i}", i))
                     cap.release()
@@ -474,6 +518,7 @@ class SettingsDialog(QDialog):
         self.cb_cam_dev.clear()
         if not found_devs:
             self.cb_cam_dev.addItem("未偵測到攝影機")
+            self.cb_cam_dev.blockSignals(False)
             return
             
         for label, idx in found_devs:
@@ -482,6 +527,9 @@ class SettingsDialog(QDialog):
         cur = self.cfg.get("webcam_index", 0)
         idx = self.cb_cam_dev.findData(cur)
         if idx >= 0: self.cb_cam_dev.setCurrentIndex(idx)
+        self.cb_cam_dev.blockSignals(False)
+        if self.cb_webcam.isChecked():
+            self._on_webcam_device_changed()
 
     def _on_webcam_toggled(self, checked):
         if checked:
@@ -490,6 +538,16 @@ class SettingsDialog(QDialog):
             if hasattr(self, "_webcam_preview") and self._webcam_preview:
                 self._webcam_preview.close()
                 self._webcam_preview = None
+
+    def _on_webcam_device_changed(self):
+        if not self.cb_webcam.isChecked():
+            return
+        if hasattr(self, "_webcam_preview") and self._webcam_preview:
+            self._switching_webcam_preview = True
+            self._webcam_preview.close()
+            self._switching_webcam_preview = False
+            self._webcam_preview = None
+        self._preview_webcam()
 
     def _preview_webcam(self):
         from .webcam import WebcamOverlay
@@ -514,6 +572,8 @@ class SettingsDialog(QDialog):
         
         # 監聽關閉事件，如果使用者手動關掉，也要同步勾選框
         def on_preview_closed():
+            if getattr(self, "_switching_webcam_preview", False):
+                return
             if self.cb_webcam.isChecked():
                 self.cb_webcam.blockSignals(True)
                 self.cb_webcam.setChecked(False)
@@ -612,7 +672,13 @@ class SettingsDialog(QDialog):
     # ============ 儲存 ============
     def accept_and_save(self):
         c = self.cfg
-        c["region_mode"] = "fullscreen" if self.rb_full.isChecked() else "custom"
+        if self.rb_full.isChecked():
+            c["region_mode"] = "fullscreen"
+        elif self.rb_monitor.isChecked():
+            c["region_mode"] = "monitor"
+        else:
+            c["region_mode"] = "custom"
+        c["monitor_index"] = self.cb_monitor.currentData() or 0
         c["resolution"] = self.cb_res.currentText()
         c["fps"] = self.sp_fps.value()
         c["container"] = self.cb_container.currentText()
@@ -622,8 +688,13 @@ class SettingsDialog(QDialog):
         c["bitrate"] = self.le_bitrate.text()
         c["audio_system"] = self.cb_sys_audio.isChecked()
         c["audio_mic"] = self.cb_mic_audio.isChecked()
-        if hasattr(self, "_detected_sys_device") and self._detected_sys_device:
-            c["audio_system_device"] = self._detected_sys_device
+        if sys.platform == "darwin":
+            if hasattr(self, "_detected_sys_device") and self._detected_sys_device:
+                c["audio_system_device"] = self._detected_sys_device
+            else:
+                c["audio_system_device"] = find_mac_system_audio_device(c.get("ffmpeg_path", "ffmpeg")) or "default"
+        else:
+            c["audio_system_device"] = "default"
         c["audio_mic_device"] = self.cb_mic.currentText()
         
         # Webcam 儲存

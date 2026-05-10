@@ -5,7 +5,7 @@
 }
 
 QMainWindow, QWidget#mainWidget, QDialog {
-    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #E0C3FC, stop:1 #8EC5FC);
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #D9F0FF, stop:1 #FFFFFF);
 }
 
 /* 卡片與容器樣式 */

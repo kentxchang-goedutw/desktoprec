@@ -1,7 +1,8 @@
 """錄影區域邊框顯示"""
-from PySide6.QtCore import Qt, QRect
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QPainter, QPen, QColor
-from PySide6.QtWidgets import QWidget, QApplication
+from PySide6.QtWidgets import QWidget
+from core.display_utils import physical_rect_to_qt
 
 class RegionBorderOverlay(QWidget):
     def __init__(self, rect_list):
@@ -10,10 +11,7 @@ class RegionBorderOverlay(QWidget):
         self.rect_list = rect_list
         self.is_recording = False
         
-        # 考慮高 DPI：將物理像素轉回 Qt 的邏輯單位以設定視窗位置
-        ratio = QApplication.primaryScreen().devicePixelRatio()
-        lx, ly = rect_list[0] / ratio, rect_list[1] / ratio
-        lw, lh = rect_list[2] / ratio, rect_list[3] / ratio
+        lx, ly, lw, lh = physical_rect_to_qt(rect_list)
         
         # 邊框稍微往外擴一點
         self.offset = 2

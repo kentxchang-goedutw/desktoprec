@@ -14,7 +14,7 @@ CONFIG_PATH = Path.home() / ".desktop_recorder" / "config.json"
 DEFAULT_CONFIG = {
     "output_dir": str(Path.home() / "Videos" / "DesktopRecorder"),
     "filename_prefix": "錄影",
-    "region_mode": "fullscreen",  # fullscreen / window / custom
+    "region_mode": "fullscreen",  # fullscreen / monitor / window / custom
     "monitor_index": 0,
     "custom_region": None,  # [x, y, w, h]
     "window_title": "",
@@ -27,7 +27,7 @@ DEFAULT_CONFIG = {
     "container": "mp4",  # mp4 / mkv
     "audio_system": False,
     "audio_mic": False,
-    "audio_system_device": "",
+    "audio_system_device": "default",
     "audio_mic_device": "",
     "show_cursor": True,
     "use_mini_toolbar": True,

@@ -6,7 +6,16 @@ import signal
 import time
 from datetime import datetime
 from pathlib import Path
-from .ffmpeg_utils import encoder_args, CREATE_NO_WINDOW, get_mac_video_devices
+from .ffmpeg_utils import (
+    encoder_args,
+    CREATE_NO_WINDOW,
+    get_mac_video_devices,
+    mac_audio_input_spec,
+    find_mac_system_audio_device,
+    supports_wasapi_loopback,
+    find_windows_system_audio_device,
+)
+from .display_utils import normalize_capture_region, monitor_rects
 
 
 class Recorder:
@@ -35,20 +44,32 @@ class Recorder:
                 cmd += ["-draw_mouse", "0"]
 
             region = cfg.get("region_mode", "fullscreen")
-            if region == "custom" and cfg.get("custom_region"):
-                x, y, w, h = cfg["custom_region"]
-                w = (w // 2) * 2
-                h = (h // 2) * 2
+            capture_region = None
+            if region == "monitor":
+                monitors = monitor_rects()
+                idx = int(cfg.get("monitor_index", 0) or 0)
+                if 0 <= idx < len(monitors):
+                    capture_region = monitors[idx]
+            elif region == "custom" and cfg.get("custom_region"):
+                capture_region = cfg["custom_region"]
+
+            if capture_region:
+                x, y, w, h = normalize_capture_region(capture_region)
                 cmd += ["-video_size", f"{w}x{h}", "-offset_x", str(x), "-offset_y", str(y)]
             cmd += ["-i", "desktop"]
         elif sys.platform == "darwin":
-            # 尋找螢幕擷取裝置索引
             video_devs = get_mac_video_devices(ffmpeg)
-            screen_idx = "1"  # 預設通常是 1
-            for idx, name in video_devs:
-                if "capture screen" in name.lower():
-                    screen_idx = idx
-                    break
+            screen_devs = [(idx, name) for idx, name in video_devs
+                           if "capture screen" in name.lower()]
+            if not screen_devs:
+                screen_devs = video_devs
+            monitor_idx = int(cfg.get("monitor_index", 0) or 0)
+            if cfg.get("region_mode") == "monitor" and 0 <= monitor_idx < len(screen_devs):
+                screen_idx = screen_devs[monitor_idx][0]
+            elif screen_devs:
+                screen_idx = screen_devs[0][0]
+            else:
+                screen_idx = "1"
             
             cmd += ["-f", "avfoundation", "-framerate", str(fps)]
             if cfg.get("show_cursor", True):
@@ -70,19 +91,48 @@ class Recorder:
         # ----- 音訊輸入 -----
         audio_inputs = 0
         if sys.platform == "win32":
-            if cfg.get("audio_system") and cfg.get("audio_system_device"):
-                cmd += ["-f", "dshow", "-i", f"audio={cfg['audio_system_device']}"]
+            if cfg.get("audio_system"):
+                device = cfg.get("audio_system_device") or "default"
+                if supports_wasapi_loopback(ffmpeg):
+                    cmd += ["-f", "wasapi", "-loopback", "1", "-i", device]
+                else:
+                    if device == "default":
+                        device = find_windows_system_audio_device(ffmpeg)
+                    if not device:
+                        download_url = "https://github.com/rdp/screen-capture-recorder-to-video-windows-free/releases/download/v0.13.3/Setup.Screen.Capturer.Recorder.v0.13.3.exe"
+                        raise Exception(
+                            "目前找不到可錄製系統聲音的裝置。\n\n"
+                            "如要啟用錄製系統音訊，請先下載並安裝此軟體：\n"
+                            f"{download_url}\n\n"
+                            "安裝後請重新啟動程式即可使用錄製系統聲音功能。"
+                        )
+                    cmd += ["-f", "dshow", "-i", f"audio={device}"]
                 audio_inputs += 1
             if cfg.get("audio_mic") and cfg.get("audio_mic_device"):
                 cmd += ["-f", "dshow", "-i", f"audio={cfg['audio_mic_device']}"]
                 audio_inputs += 1
         elif sys.platform == "darwin":
-            if cfg.get("audio_system") and cfg.get("audio_system_device"):
-                cmd += ["-f", "avfoundation", "-i", f":{cfg['audio_system_device']}"]
-                audio_inputs += 1
+            if cfg.get("audio_system"):
+                system_device = cfg.get("audio_system_device")
+                if not system_device or system_device == "default":
+                    system_device = find_mac_system_audio_device(ffmpeg)
+                system_spec = mac_audio_input_spec(ffmpeg, system_device)
+                if system_spec:
+                    cmd += ["-f", "avfoundation", "-i", system_spec]
+                    audio_inputs += 1
+                else:
+                    blackhole_url = "https://github.com/ExistentialAudio/BlackHole"
+                    raise Exception(
+                        "目前找不到可用於錄製 macOS 系統聲音的裝置。\n\n"
+                        "macOS 錄製系統音訊需安裝虛擬音訊裝置，建議使用 BlackHole：\n"
+                        f"{blackhole_url}\n\n"
+                        "安裝後，請在「設定 > 音訊」中確認是否已偵測到該裝置。"
+                    )
             if cfg.get("audio_mic") and cfg.get("audio_mic_device"):
-                cmd += ["-f", "avfoundation", "-i", f":{cfg['audio_mic_device']}"]
-                audio_inputs += 1
+                mic_spec = mac_audio_input_spec(ffmpeg, cfg.get("audio_mic_device"))
+                if mic_spec:
+                    cmd += ["-f", "avfoundation", "-i", mic_spec]
+                    audio_inputs += 1
 
         # ----- 縮放與濾鏡 -----
         res = cfg.get("resolution", "原始")
@@ -135,17 +185,18 @@ class Recorder:
     def start(self):
         cmd = self._build_command()
         print(f"[Recorder] 執行命令: {' '.join(cmd)}")
-        self.proc = subprocess.Popen(
-            cmd,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            creationflags=CREATE_NO_WINDOW,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            bufsize=1
-        )
+        popen_kwargs = {
+            "stdin": subprocess.PIPE,
+            "stdout": subprocess.DEVNULL,
+            "stderr": subprocess.PIPE,
+            "text": True,
+            "encoding": "utf-8",
+            "errors": "replace",
+            "bufsize": 1,
+        }
+        if CREATE_NO_WINDOW:
+            popen_kwargs["creationflags"] = CREATE_NO_WINDOW
+        self.proc = subprocess.Popen(cmd, **popen_kwargs)
         self.start_time = time.time()
         self.paused = False
         self.pause_offset = 0

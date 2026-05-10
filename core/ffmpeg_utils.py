@@ -14,16 +14,15 @@ FFMPEG_URL = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffm
 
 def find_ffmpeg():
     """尋找 ffmpeg 執行檔"""
-    p = shutil.which("ffmpeg")
-    if p:
-        return p
-    
-    # 嘗試預設本地路徑
     app_data = Path.home() / ".desktop_recorder" / "bin"
     ext = ".exe" if sys.platform == "win32" else ""
     local = app_data / f"ffmpeg{ext}"
     if local.exists():
         return str(local)
+
+    p = shutil.which("ffmpeg")
+    if p:
+        return p
         
     # 嘗試原本的本地 ffmpeg/ 資料夾
     here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -32,10 +31,10 @@ def find_ffmpeg():
         return legacy_local
     return None
 
-def ensure_ffmpeg(progress_callback=None):
+def ensure_ffmpeg(progress_callback=None, force_download=False):
     """確保 ffmpeg 存在，若不存在則下載 (目前僅支援 Windows 自動下載)"""
     path = find_ffmpeg()
-    if path:
+    if path and not force_download:
         return path
 
     if sys.platform != "win32":
@@ -81,11 +80,10 @@ def ensure_ffmpeg(progress_callback=None):
 def run_ffmpeg(args, ffmpeg_path="ffmpeg", timeout=10):
     """以 bytes 取得輸出後依序嘗試多種編碼解碼，避免中文裝置名稱被吞掉"""
     try:
-        r = subprocess.run(
-            [ffmpeg_path] + args,
-            capture_output=True, timeout=timeout,
-            creationflags=CREATE_NO_WINDOW,
-        )
+        run_kwargs = {"capture_output": True, "timeout": timeout}
+        if CREATE_NO_WINDOW:
+            run_kwargs["creationflags"] = CREATE_NO_WINDOW
+        r = subprocess.run([ffmpeg_path] + args, **run_kwargs)
         raw = (r.stdout or b"") + b"\n" + (r.stderr or b"")
         for enc in ("utf-8", "mbcs", "cp950", "cp936", "cp932", "latin-1"):
             try:
@@ -180,6 +178,34 @@ def _list_dshow_audio(ffmpeg_path="ffmpeg"):
                 devices.append(name)
     return devices
 
+
+def supports_wasapi_loopback(ffmpeg_path="ffmpeg"):
+    """Return True when this FFmpeg build supports WASAPI loopback capture."""
+    if sys.platform != "win32":
+        return False
+    out = run_ffmpeg(["-hide_banner", "-h", "demuxer=wasapi"], ffmpeg_path)
+    low = out.lower()
+    return "demuxer wasapi" in low and "loopback" in low
+
+
+def find_windows_system_audio_device(ffmpeg_path="ffmpeg"):
+    """Find a DirectShow device that can capture Windows system output."""
+    keywords = (
+        "stereo mix", "立體聲混音", "what u hear", "wave out mix",
+        "virtual-audio-capturer", "loopback", "speaker",
+    )
+    for device in _list_dshow_audio(ffmpeg_path):
+        if any(keyword in device.lower() for keyword in keywords):
+            return device
+    return None
+
+
+def can_capture_windows_system_audio(ffmpeg_path="ffmpeg"):
+    return (
+        supports_wasapi_loopback(ffmpeg_path)
+        or bool(find_windows_system_audio_device(ffmpeg_path))
+    )
+
 def _list_avfoundation_audio(ffmpeg_path="ffmpeg"):
     """列出 macOS avfoundation 音訊裝置"""
     out = run_ffmpeg(["-hide_banner", "-list_devices", "true",
@@ -198,10 +224,39 @@ def _list_avfoundation_audio(ffmpeg_path="ffmpeg"):
             # 格式: [AVFoundation input device @ 0x...] [0] Built-in Microphone
             m = re.search(r'\[(\d+)\]\s+(.*)', line)
             if m:
+                idx = m.group(1).strip()
                 name = m.group(2).strip()
                 if name:
-                    devices.append(name)
+                    devices.append(f"{idx}: {name}")
     return devices
+
+
+def mac_audio_input_spec(ffmpeg_path="ffmpeg", device=""):
+    """Return an avfoundation audio input spec for a saved macOS device."""
+    if not device or device == "default":
+        return None
+    m = re.match(r'\s*(\d+)\s*:', str(device))
+    if m:
+        return f":{m.group(1)}"
+
+    target = str(device).strip().lower()
+    for item in _list_avfoundation_audio(ffmpeg_path):
+        m = re.match(r'\s*(\d+)\s*:\s*(.*)', item)
+        if m and m.group(2).strip().lower() == target:
+            return f":{m.group(1)}"
+    return None
+
+
+def find_mac_system_audio_device(ffmpeg_path="ffmpeg"):
+    """Find a likely macOS loopback device for system audio capture."""
+    keywords = (
+        "blackhole", "soundflower", "loopback", "background music",
+        "backgroundmusic", "eqmac", "system audio",
+    )
+    for item in _list_avfoundation_audio(ffmpeg_path):
+        if any(k in item.lower() for k in keywords):
+            return item
+    return None
 
 def get_mac_video_devices(ffmpeg_path="ffmpeg"):
     """列出 macOS avfoundation 視訊/螢幕裝置，回傳 (index, name) 列表"""
