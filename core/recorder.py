@@ -22,13 +22,14 @@ class Recorder:
     def __init__(self, cfg):
         self.cfg = cfg
         self.proc = None
-        self.output_path = None
+        self.final_output_path = None
         self.start_time = None
         self.paused = False
         self.pause_offset = 0
         self._pause_start = None
+        self.segments = []
 
-    def _build_command(self):
+    def _build_command(self, output_path):
         cfg = self.cfg
         ffmpeg = cfg.get("ffmpeg_path", "ffmpeg")
         fps = cfg.get("fps", 30)
@@ -158,14 +159,33 @@ class Recorder:
                             cfg.get("crf", 23), cfg.get("bitrate", "5M"))
         cmd += ["-r", str(fps), "-g", str(fps * 2)]
 
-        # ----- 混音 (兩條音訊時混為一軌) -----
+        # ----- 混音與音訊濾鏡 -----
+        # 決定麥克風在哪個串流索引
+        mic_idx = -1
+        if cfg.get("audio_mic") and cfg.get("audio_mic_device"):
+            if cfg.get("audio_system"):
+                mic_idx = 2
+            else:
+                mic_idx = 1
+        
+        # 麥克風降噪濾鏡：afftdn=nr=12 (降噪12dB), highpass=f=100 (濾除低頻低鳴)
+        mic_filter = "afftdn=nr=12,highpass=f=100"
+        
         if audio_inputs == 2:
+            # 兩條音訊：[1:a]系統, [2:a]麥克風
             cmd += ["-filter_complex",
-                    "[1:a][2:a]amix=inputs=2:duration=longest[aout]",
+                    f"[2:a]{mic_filter}[mic_clean];"
+                    "[1:a][mic_clean]amix=inputs=2:duration=longest[aout]",
                     "-map", "0:v", "-map", "[aout]"]
             cmd += ["-c:a", "aac", "-b:a", "192k"]
         elif audio_inputs == 1:
-            cmd += ["-map", "0:v", "-map", "1:a"]
+            if mic_idx == 1:
+                # 只有麥克風
+                cmd += ["-filter_complex", f"[1:a]{mic_filter}[aout]",
+                        "-map", "0:v", "-map", "[aout]"]
+            else:
+                # 只有系統音
+                cmd += ["-map", "0:v", "-map", "1:a"]
             cmd += ["-c:a", "aac", "-b:a", "192k"]
         else:
             cmd += ["-map", "0:v", "-an"]
@@ -174,16 +194,12 @@ class Recorder:
         ext = cfg.get("container", "mp4")
         if ext == "mp4":
             cmd += ["-movflags", "+faststart"]
-        out_dir = Path(cfg.get("output_dir"))
-        out_dir.mkdir(parents=True, exist_ok=True)
-        ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        prefix = cfg.get("filename_prefix", "錄影")
-        self.output_path = str(out_dir / f"{prefix}_{ts}.{ext}")
-        cmd.append(self.output_path)
+        
+        cmd.append(output_path)
         return cmd
 
-    def start(self):
-        cmd = self._build_command()
+    def _start_segment(self, output_path):
+        cmd = self._build_command(output_path)
         print(f"[Recorder] 執行命令: {' '.join(cmd)}")
         popen_kwargs = {
             "stdin": subprocess.PIPE,
@@ -196,75 +212,140 @@ class Recorder:
         }
         if CREATE_NO_WINDOW:
             popen_kwargs["creationflags"] = CREATE_NO_WINDOW
-        self.proc = subprocess.Popen(cmd, **popen_kwargs)
-        self.start_time = time.time()
-        self.paused = False
-        self.pause_offset = 0
+        
+        proc = subprocess.Popen(cmd, **popen_kwargs)
         
         # 啟動檢查：確保 FFmpeg 已成功掛載輸入源
         time.sleep(0.6)
-        if self.proc.poll() is not None:
-            err = self.proc.stderr.read()
+        if proc.poll() is not None:
+            err = proc.stderr.read()
             raise Exception(f"FFmpeg 啟動失敗：\n{err}")
-            
-        return self.output_path
-
-    def pause(self):
-        """ffmpeg 不支援真暫停。改用旗標 + 在 UI 顯示，輸出時段不分割。
-        簡化版：實際停止接著重啟（會分檔）。此處只記錄狀態，不真實暫停 ffmpeg。"""
-        if self.proc and not self.paused:
-            self.paused = True
-            self._pause_start = time.time()
-
-    def resume(self):
-        if self.proc and self.paused:
-            self.pause_offset += time.time() - self._pause_start
-            self.paused = False
-
-    def stop(self):
-        if not self.proc:
-            return None
-        proc = self.proc
-        self.proc = None
         
-        print(f"[Recorder] 正在停止錄影並寫入檔案尾部資訊...")
+        return proc
+
+    def start(self):
+        cfg = self.cfg
+        out_dir = Path(cfg.get("output_dir"))
+        out_dir.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        prefix = cfg.get("filename_prefix", "錄影")
+        ext = cfg.get("container", "mp4")
+        self.final_output_path = str(out_dir / f"{prefix}_{ts}.{ext}")
+        
+        first_segment = self.final_output_path
+        # 如果使用者之後暫停，第一個分段會被當作 segments[0]
+        self.segments = [first_segment]
+        
+        self.proc = self._start_segment(first_segment)
+        self.start_time = time.time()
+        self.paused = False
+        self.pause_offset = 0
+        return self.final_output_path
+
+    def _stop_proc(self, proc):
+        if not proc:
+            return
         try:
-            # 傳送 'q' 讓 FFmpeg 正常結束並 Flush 緩衝區
             if proc.stdin:
                 try:
                     proc.stdin.write("q\n")
                     proc.stdin.flush()
                 except (OSError, BrokenPipeError):
                     pass
-            
-            # 等待程序完成檔案寫入 (最長等待 10 秒)
             try:
-                _, stderr = proc.communicate(timeout=10)
-                if stderr:
-                    print(f"[Recorder] FFmpeg 結束日誌: {stderr}")
+                proc.communicate(timeout=5)
             except subprocess.TimeoutExpired:
-                print("[Recorder] FFmpeg 結束逾時，強制終止")
                 proc.terminate()
                 try:
                     proc.wait(timeout=3)
                 except:
                     proc.kill()
         except Exception as e:
-            print(f"[Recorder] 停止時發生異常: {e}")
+            print(f"[Recorder] 停止程序時發生異常: {e}")
             try:
                 proc.kill()
             except:
                 pass
         finally:
-            # 顯式關閉所有串流
             for stream in (proc.stdin, proc.stdout, proc.stderr):
                 try:
                     if stream: stream.close()
                 except:
                     pass
+
+    def pause(self):
+        """真正停止目前的 ffmpeg 錄製"""
+        if self.proc and not self.paused:
+            print("[Recorder] 暫停錄影，停止目前的 FFmpeg 程序")
+            self._stop_proc(self.proc)
+            self.proc = None
+            self.paused = True
+            self._pause_start = time.time()
+
+    def resume(self):
+        """開啟新的分段錄影"""
+        if self.paused:
+            print("[Recorder] 恢復錄影，啟動新的分段")
+            self.pause_offset += time.time() - self._pause_start
+            
+            # 產生新分段檔名
+            base_path = Path(self.final_output_path)
+            seg_path = str(base_path.parent / f"{base_path.stem}_seg{len(self.segments)}{base_path.suffix}")
+            self.segments.append(seg_path)
+            
+            self.proc = self._start_segment(seg_path)
+            self.paused = False
+
+    def stop(self):
+        if not self.proc and not self.paused:
+            return None
         
-        print(f"[Recorder] 錄影已完整寫入：{self.output_path}")
-        return self.output_path
+        if self.proc:
+            self._stop_proc(self.proc)
+            self.proc = None
+        
+        # 如果有多個分段，需要合併
+        if len(self.segments) > 1:
+            print(f"[Recorder] 正在合併 {len(self.segments)} 個分段...")
+            self._merge_segments()
+        
+        print(f"[Recorder] 錄影已完整完成：{self.final_output_path}")
+        return self.final_output_path
+
+    def _merge_segments(self):
+        ffmpeg = self.cfg.get("ffmpeg_path", "ffmpeg")
+        # 建立 concat 清單檔案
+        list_path = Path(self.final_output_path).parent / "concat_list.txt"
+        with open(list_path, "w", encoding="utf-8") as f:
+            for seg in self.segments:
+                # ffmpeg concat 需要跳脫路徑或使用相對路徑
+                abs_path = os.path.abspath(seg).replace("\\", "/")
+                f.write(f"file '{abs_path}'\n")
+        
+        # 最終合併後的暫時路徑 (避免覆蓋到第一個分段)
+        temp_final = str(Path(self.final_output_path).parent / f"merged_{Path(self.final_output_path).name}")
+        
+        cmd = [
+            ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
+            "-f", "concat", "-safe", "0", "-i", str(list_path),
+            "-c", "copy", temp_final
+        ]
+        
+        try:
+            subprocess.run(cmd, creationflags=CREATE_NO_WINDOW if sys.platform == "win32" else 0, check=True)
+            # 合併成功後，刪除所有分段與清單檔案
+            for seg in self.segments:
+                try: os.remove(seg)
+                except: pass
+            try: os.remove(list_path)
+            except: pass
+            
+            # 將合併後的檔案重新命名為最終目標
+            if os.path.exists(self.final_output_path):
+                os.remove(self.final_output_path)
+            os.rename(temp_final, self.final_output_path)
+        except Exception as e:
+            print(f"[Recorder] 合併分段失敗: {e}")
 
     def elapsed(self):
         if not self.start_time:

@@ -478,7 +478,7 @@ class MainWindow(QMainWindow):
             self.status.showMessage("● 錄影中…")
         else:
             self.recorder.pause()
-            self.status.showMessage("⏸ 暫停（注意：ffmpeg 不真暫停，仍會錄製）")
+            self.status.showMessage("⏸ 錄影已暫停")
 
     @Slot()
     def on_stop(self):
